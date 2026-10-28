@@ -359,6 +359,7 @@ AR2_CFG = {
  },
  misc = {
  cosReal = false,
+ cosKeep = false,
  freecam = false, freecamSpeed = 60, spectate = false, specDist = 10, specNative = true,
  ghostPos = false, ghostDist = 420, ghostDir = "Up",
  highGhost = false, ghostAlt = 1400, ghostRender = true, forceRender = false,
@@ -1249,7 +1250,7 @@ end
 AR2_COSMETIC_SKIP = {
  misc = {
  guiUnlock=true, cosUnlock=true, outfitAuto=true, cosRemoveAll=true, cosReal=true,
- cosWear=true,
+ cosWear=true, cosKeep=true,
  fakeBag=true, bagName=true, bagHideReal=true, bagPart=true, bagPreset=true,
  bagScale=true, bagOffX=true, bagOffY=true, bagOffZ=true,
  bagYaw=true, bagPitch=true, bagRoll=true,
@@ -2180,7 +2181,31 @@ AR2_CORPSE_KIND = AR2_CORPSE_KIND or {}
 function AR2_corpseIsZombie(name)
  local memo = AR2_CORPSE_KIND[name]
  if memo ~= nil then return memo end
- local v = (AR2_zombieConfig(name) ~= nil) or AR2_corpseLooksInfected(name)
+ if AR2_corpseLooksInfected(name) then
+ AR2_CORPSE_KIND[name] = true
+ return true
+ end
+ local nm = tostring(name or "")
+ local isReal = false
+ pcall(function()
+ isReal = (AR2_Players:FindFirstChild(nm) ~= nil)
+ or (AR2_corpseMemory and AR2_corpseMemory[nm] ~= nil)
+ end)
+ if isReal then
+ AR2_CORPSE_KIND[name] = false
+ return false
+ end
+ local cfg = AR2_zombieConfig(name)
+ local looksLikeZombieCfg = false
+ if type(cfg) == "table" then
+ pcall(function()
+ looksLikeZombieCfg = rawget(cfg, "Health")      ~= nil
+ or rawget(cfg, "WalkSpeed")   ~= nil
+ or rawget(cfg, "Damage")      ~= nil
+ or rawget(cfg, "DisplayName") ~= nil
+ end)
+ end
+ local v = looksLikeZombieCfg
  if AR2_ZCFG_WHY == "ok" or v then AR2_CORPSE_KIND[name] = v end
  return v
 end
@@ -2209,7 +2234,7 @@ function AR2_buildCorpse(model)
  local known  = player ~= nil or AR2_corpseMemory[model.Name] ~= nil
  local e = {
  kind = "corpse", model = model, name = model.Name, player = player,
- isPlayer = not AR2_corpseIsZombie(model.Name),
+ isPlayer = known or (not AR2_corpseIsZombie(model.Name)),
  known = known, online = player ~= nil,
  root = anchor, position = anchor.Position,
  distance = (anchor.Position - AR2_ORIGIN).Magnitude,
@@ -8531,15 +8556,25 @@ function AR2_fitPatchLoadout(lo)
  else
 
  local existing = (lo.Equipment or {})[slot]
- if type(existing) == "table" then
+ if AR2_MULTI_SLOTS[slot] or type(existing) == "table" then
  local cur = out.Equipment[slot]
- if type(cur) ~= "table" then
- cur = {}
- for k, v in pairs(existing) do cur[k] = v end
+ if type(cur) ~= "table" then cur = {} end
+ local clean = {}
+ for i = 1, AR2_ACC_SLOTS do
+ local ks = tostring(i)
+ local v = cur[ks]
+ if v == nil then v = cur[i] end
+ if v == nil and type(existing) == "table" then
+ v = existing[ks]
+ if v == nil then v = existing[i] end
  end
- local k = tonumber(sub) or sub or 1
- if name == "Default" then cur[k] = nil else cur[k] = name end
- out.Equipment[slot] = cur
+ if type(v) ~= "string" or v == "" then v = "Default" end
+ clean[ks] = v
+ end
+ local kn = tonumber(sub) or 1
+ if kn < 1 or kn > AR2_ACC_SLOTS then kn = 1 end
+ clean[tostring(kn)] = (name == "Default") and "Default" or name
+ out.Equipment[slot] = clean
  elseif name == "Default" then
  out.Equipment[slot] = "Default"
  else
@@ -8568,6 +8603,8 @@ function AR2_fitStrip()
  AR2_fitStripAll()
 end
 AR2_fitWorn = AR2_fitWorn or {}
+AR2_MULTI_SLOTS = { Accessory = true }
+AR2_ACC_SLOTS = 2
 function AR2_fitItemData()
  local ok, d = pcall(function()
  return require(AR2_ReplicatedFirst:WaitForChild("Framework", 30)).Configs.ItemData
@@ -8604,6 +8641,19 @@ function AR2_fitWear(name, sub)
  local slot = AR2_fitSlotOf(name)
  if not slot then return false, "no slot for " .. tostring(name) end
  AR2_fitWorn = AR2_fitWorn or {}
+ if AR2_MULTI_SLOTS[slot] and (sub == nil or tostring(sub) == "") then
+ local taken = {}
+ for _, rec in pairs(AR2_fitWorn) do
+ if rec.slot == slot and rec.name ~= "Default" then
+ taken[tostring(rec.sub or 1)] = rec.name
+ end
+ end
+ if taken["1"] == name then sub = "1"
+ elseif taken["2"] == name then sub = "2"
+ elseif taken["1"] == nil then sub = "1"
+ elseif taken["2"] == nil then sub = "2"
+ else sub = "1" end
+ end
  AR2_fitWorn[AR2_fitKey(slot, sub)] = { slot = slot, sub = sub, name = name }
  AR2_fitRedress()
  return true, slot
@@ -8673,6 +8723,107 @@ end
 function AR2_fitStripAll()
  AR2_fitWorn = {}
  AR2_fitRedress()
+end
+AR2_OUTFIT_FOLDER = AR2_OUTFIT_FOLDER or "OriginHUB_Outfits"
+function AR2_fitOutfitDir()
+ if AR2_isfolder and AR2_makefolder and not AR2_isfolder(AR2_OUTFIT_FOLDER) then
+ pcall(AR2_makefolder, AR2_OUTFIT_FOLDER)
+ end
+ return AR2_OUTFIT_FOLDER
+end
+function AR2_fitOutfitPath(name)
+ name = tostring(name or ""):gsub("[^%w%s_%-]", "")
+ name = name:gsub("^%s+", ""):gsub("%s+$", "")
+ if name == "" then return nil end
+ return AR2_fitOutfitDir() .. "/" .. name .. ".json", name
+end
+function AR2_fitOutfitList()
+ local out = {}
+ if not AR2_listfiles then return out end
+ pcall(AR2_fitOutfitDir)
+ local ok, files = pcall(AR2_listfiles, AR2_OUTFIT_FOLDER)
+ if not ok or type(files) ~= "table" then return out end
+ for _, path in ipairs(files) do
+ local base = tostring(path):match("[^/\\]+$")
+ if base then
+ base = base:gsub("%.json$", "")
+ if base ~= "" then out[#out+1] = base end
+ end
+ end
+ table.sort(out)
+ return out
+end
+function AR2_fitOutfitSave(name)
+ local path, clean = AR2_fitOutfitPath(name)
+ if not path then return false, "bad name" end
+ if not AR2_writefile then return false, "executor has no writefile" end
+ local items = {}
+ for _, rec in pairs(AR2_fitWorn or {}) do
+ if type(rec) == "table" and type(rec.name) == "string" and rec.name ~= "Default" then
+ items[#items+1] = {
+ slot = tostring(rec.slot),
+ sub = rec.sub and tostring(rec.sub) or nil,
+ name = rec.name,
+ }
+ end
+ end
+ if #items == 0 then return false, "nothing worn to save" end
+ local jok, json = pcall(function() return AR2_HttpService:JSONEncode(items) end)
+ if not jok then return false, "encode failed" end
+ if not pcall(AR2_writefile, path, json) then return false, "write failed" end
+ return true, clean .. " -- " .. tostring(#items) .. " item(s)"
+end
+function AR2_fitOutfitLoad(name)
+ local path, clean = AR2_fitOutfitPath(name)
+ if not path then return false, "bad name" end
+ if not (AR2_isfile and AR2_readfile and AR2_isfile(path)) then return false, "not found" end
+ local rok, raw = pcall(AR2_readfile, path)
+ if not rok then return false, "read failed" end
+ local jok, items = pcall(function() return AR2_HttpService:JSONDecode(raw) end)
+ if not jok or type(items) ~= "table" then return false, "corrupt file" end
+ AR2_fitWorn = {}
+ local n = 0
+ for _, rec in ipairs(items) do
+ if type(rec) == "table" and type(rec.name) == "string" and type(rec.slot) == "string" then
+ AR2_fitWorn[AR2_fitKey(rec.slot, rec.sub)] =
+ { slot = rec.slot, sub = rec.sub, name = rec.name }
+ n = n + 1
+ end
+ end
+ if n == 0 then return false, "file had no items" end
+ AR2_fitRedress()
+ return true, clean .. " -- " .. tostring(n) .. " item(s)"
+end
+function AR2_fitOutfitDelete(name)
+ local path, clean = AR2_fitOutfitPath(name)
+ if not path then return false, "bad name" end
+ if not (AR2_delfile and AR2_isfile and AR2_isfile(path)) then return false, "not found" end
+ if not pcall(AR2_delfile, path) then return false, "delete failed" end
+ return true, clean
+end
+function AR2_fitReapply()
+ if type(AR2_fitWorn) ~= "table" or next(AR2_fitWorn) == nil then return false end
+ return (pcall(AR2_fitRedress))
+end
+function AR2_fitSetRespawnKeep(on)
+ AR2_CFG.misc.cosKeep = on and true or false
+ if AR2_fitRespawnConn then
+ pcall(function() AR2_fitRespawnConn:Disconnect() end)
+ AR2_fitRespawnConn = nil
+ end
+ if not AR2_CFG.misc.cosKeep then return true, "off" end
+ AR2_fitRespawnConn = AR2_LocalPlayer.CharacterAdded:Connect(function(char)
+ task.spawn(function()
+ pcall(function() char:WaitForChild("Humanoid", 15) end)
+ for _ = 1, 4 do
+ task.wait(1.2)
+ if not AR2_CFG.misc.cosKeep then return end
+ if not AR2_CFG.misc.cosReal then return end
+ pcall(AR2_fitReapply)
+ end
+ end)
+ end)
+ return true, "on -- outfit re-applies after respawn"
 end
 function AR2_fitRedress()
  local fw, Wardrobe, Loadouts
@@ -9727,7 +9878,8 @@ function AR2_setWallbangAll(on)
  w.ignoreInject   = w.wallbang
  w.fakeWindows    = w.wallbang
  w.hbeSpoofCast   = w.wallbang
- pcall(AR2_setWallbangFilter, w.wallbang)
+ pcall(AR2_setWallbangFilter, false)
+ pcall(AR2_setBulletFilterPen, w.wallbang)
  if w.wallbang then
  pcall(function() if startWallbangTagging then startWallbangTagging() end end)
  else
@@ -9828,6 +9980,78 @@ function AR2_setWallbangFilter(on)
  end
 end
 AR2_HBE_PARTS = { "Head" }
+AR2_bclFilterOrig = nil
+AR2_bclCastOrig   = nil
+AR2_bclDepth      = 0
+AR2_bclPens       = 0
+AR2_bclNote       = "off"
+function AR2_setBulletFilterPen(on)
+ local RC = AR2_raycastingLib
+ if type(RC) ~= "table" then
+ AR2_bclNote = "Raycasting unreachable"
+ return false, AR2_bclNote
+ end
+ if not on then
+ if AR2_bclFilterOrig then
+ pcall(function() RC.bulletCastLightFilter = AR2_bclFilterOrig end)
+ end
+ if AR2_bclCastOrig then
+ pcall(function() RC.BulletCastLight = AR2_bclCastOrig end)
+ end
+ AR2_bclFilterOrig, AR2_bclCastOrig = nil, nil
+ AR2_bclNote = "off"
+ return true, AR2_bclNote
+ end
+ if AR2_bclFilterOrig then return true, AR2_bclNote end
+ local f = rawget(RC, "bulletCastLightFilter")
+ local c = rawget(RC, "BulletCastLight")
+ if type(f) ~= "function" or type(c) ~= "function" then
+ AR2_bclNote = "filter/cast missing"
+ return false, AR2_bclNote
+ end
+ AR2_bclFilterOrig, AR2_bclCastOrig = f, c
+ local okCast = pcall(function()
+ RC.BulletCastLight = function(self, ray, ignore, water, ...)
+ AR2_bclDepth = 0
+ return AR2_bclCastOrig(self, ray, ignore, water, ...)
+ end
+ end)
+ local okFilter = pcall(function()
+ RC.bulletCastLightFilter = function(inst, water)
+ local okB, base = pcall(AR2_bclFilterOrig, inst, water)
+ if okB and base then return true end
+ local W = AR2_CFG.weapon
+ local rageWindow = AR2_CFG.rageBot.on
+ and (AR2_rageFireMark or 0) > 0
+ and (os.clock() - AR2_rageFireMark) <= 0.40
+ if not (W.wallbang or rageWindow) then return false end
+ local isTarget = false
+ pcall(function()
+ isTarget = RC:IsHitCharacter(inst)
+ or RC:IsHitZombie(inst)
+ or RC:IsHitVehicle(inst)
+ end)
+ if isTarget then return false end
+ local budget
+ if W.penUnlimited or rageWindow then
+ budget = math.huge
+ else
+ budget = math.clamp(tonumber(W.wallbangBudget) or 5, 0, 12)
+ end
+ if (AR2_bclDepth or 0) >= budget then return false end
+ AR2_bclDepth = (AR2_bclDepth or 0) + 1
+ AR2_bclPens  = (AR2_bclPens or 0) + 1
+ return true
+ end
+ end)
+ if not (okCast and okFilter) then
+ pcall(AR2_setBulletFilterPen, false)
+ AR2_bclNote = "rawset refused"
+ return false, AR2_bclNote
+ end
+ AR2_bclNote = "filter hooked"
+ return true, AR2_bclNote
+end
 AR2_resolverOrig  = nil
 AR2_resolverStep  = nil
 AR2_penSpent      = 0
@@ -27777,6 +28001,80 @@ end
  Notif.new({Title="DROIDWARE",
  Content = ok and ("Stripped -- " .. tostring(n) .. " model(s)") or "Failed",
  Duration = 3})
+ end})
+ addToggle(cosSection,"Keep Outfit After Death",AR2_CFG.misc,"cosKeep",function(v)
+ local ok,why = AR2_fitSetRespawnKeep(v)
+ Notif.new({Title="DROIDWARE",Content=tostring(why),Duration=3})
+ end)
+ cosSection:AddButton({Name="Re-Apply Outfit Now",Callback=function()
+ if AR2_fitReapply() then
+ Notif.new({Title="DROIDWARE",Content="Re-applied",Duration=2})
+ else
+ Notif.new({Title="DROIDWARE",Content="Nothing worn",Duration=2})
+ end
+ end})
+ AR2_outfitSection = cosmeticsTab:AddSection({Name="Saved Outfits"})
+ AR2_outfitPick = nil
+ AR2_outfitName = ""
+ function AR2_outfitListRefresh()
+ local l = AR2_fitOutfitList() or {}
+ if #l == 0 then l = { "(none saved)" } end
+ if AR2_outfitPick == nil or not table.find(l, AR2_outfitPick) then
+ AR2_outfitPick = l[1]
+ end
+ pcall(function()
+ if AR2_outfitDrop and AR2_outfitDrop.SetValues then AR2_outfitDrop:SetValues(l) end
+ if AR2_outfitDrop and AR2_outfitDrop.SetValue then AR2_outfitDrop:SetValue(AR2_outfitPick) end
+ end)
+ return l
+ end
+ AR2_outfitFirst = AR2_fitOutfitList() or {}
+ if #AR2_outfitFirst == 0 then AR2_outfitFirst = { "(none saved)" } end
+ AR2_outfitPick = AR2_outfitFirst[1]
+ AR2_outfitDrop = AR2_outfitSection:AddLabel("Saved Outfits"):AddDropdown({
+ Values = AR2_outfitFirst,
+ Default = AR2_outfitFirst[1],
+ Callback = function(v) AR2_outfitPick = v end,
+ })
+ AR2_outfitSection:AddInput({Text="Save As",Placeholder="outfit name",
+ Callback=function(v) AR2_outfitName = tostring(v or "") end})
+ AR2_outfitSection:AddButton({Name="Save Current Outfit",Callback=function()
+ local nm = (AR2_outfitName ~= "" and AR2_outfitName) or AR2_outfitPick
+ if not nm or nm == "" or nm == "(none saved)" then
+ Notif.new({Title="DROIDWARE",Content="Type a name first",Duration=3})
+ return
+ end
+ local ok,why = AR2_fitOutfitSave(nm)
+ Notif.new({Title="DROIDWARE",
+ Content = ok and ("Saved: " .. tostring(why)) or tostring(why), Duration=3})
+ if ok then
+ AR2_outfitPick = nm
+ pcall(AR2_outfitListRefresh)
+ end
+ end})
+ AR2_outfitSection:AddButton({Name="Load Selected",Callback=function()
+ if not AR2_CFG.misc.cosReal then
+ Notif.new({Title="DROIDWARE",Content="Turn Unlock Cosmetics on first",Duration=3})
+ return
+ end
+ if not AR2_outfitPick or AR2_outfitPick == "(none saved)" then
+ Notif.new({Title="DROIDWARE",Content="No outfit selected",Duration=3})
+ return
+ end
+ local ok,why = AR2_fitOutfitLoad(AR2_outfitPick)
+ Notif.new({Title="DROIDWARE",
+ Content = ok and ("Wearing: " .. tostring(why)) or tostring(why), Duration=3})
+ end})
+ AR2_outfitSection:AddButton({Name="Delete Selected",Callback=function()
+ if not AR2_outfitPick or AR2_outfitPick == "(none saved)" then return end
+ local ok,why = AR2_fitOutfitDelete(AR2_outfitPick)
+ Notif.new({Title="DROIDWARE",
+ Content = ok and ("Deleted: " .. tostring(why)) or tostring(why), Duration=3})
+ AR2_outfitPick = nil
+ pcall(AR2_outfitListRefresh)
+ end})
+ AR2_outfitSection:AddButton({Name="Refresh List",Callback=function()
+ pcall(AR2_outfitListRefresh)
  end})
  AR2_cosGrantIndex = AR2_cosGrantIndex or "1"
  local skinSection = cosmeticsTab:AddSection({Name="Gun Skins",Position="right"})
