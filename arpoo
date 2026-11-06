@@ -1,4 +1,3 @@
---FUCK U SKIDSSS YALL ARE GAAAAAAAA--
 AR2_dmgWatched = 0
 if getgenv then
  local g = getgenv()
@@ -6316,7 +6315,7 @@ function AR2_predict(part, origin, velocity)
  local flight = (point - origin).Magnitude / speed
  local drop   = Vector3.new(0, 0, 0)
  for _ = 1, 8 do
- drop  = (g > 0) and Vector3.new(0, 0.5 * g * flight * flight, 0)
+ drop  = (g > 0) and Vector3.new(0, g * flight * flight, 0)
  or Vector3.new(0, 0, 0)
  point = base + vLead * flight + drop
  local newFlight = (point - origin).Magnitude / speed
@@ -8168,6 +8167,9 @@ end)
 AR2_whitelistOrig = nil
 AR2_headHits      = 0
 function AR2_installAlwaysHead()
+ return false, "disabled: writes a watched module field (note 14)"
+end
+function AR2_installAlwaysHead_DISABLED()
  if AR2_whitelistOrig then return true end
  if not AR2_raycastingLib then return false end
  if type(rawget(AR2_raycastingLib, "CastWithWhiteList")) ~= "function" then return false end
@@ -9017,6 +9019,9 @@ function AR2_fitInterceptSend(msg, ...)
  return false
 end
 function AR2_fitHookSend()
+ return false, "disabled: replacing Network.Send trips note 14 and poisons the caller audit"
+end
+function AR2_fitHookSend_DISABLED()
  if AR2_fitSendHooked then return true, "already" end
  local NET = AR2_networkLib()
  if type(NET) ~= "table" then return false, "Network unreachable" end
@@ -9685,6 +9690,9 @@ function AR2_mrRecord(part, dist)
  if #AR2_mrLog > 120 then table.remove(AR2_mrLog, 1) end
 end
 function AR2_setWallbangWhitelist(on)
+ return false, "disabled: writes a watched module field (note 14)"
+end
+function AR2_setWallbangWhitelist_DISABLED(on)
  local RC = AR2_raycastingLib
  if type(RC) ~= "table" then return false, "Raycasting unreachable" end
  if not on then
@@ -9743,6 +9751,9 @@ function AR2_setWallbangWhitelist(on)
  return true, ("on -- %d parts whitelisted"):format(#AR2_wlFlat)
 end
 function AR2_setWallbangFilter(on)
+ return false, "disabled: writes a watched module field (note 14)"
+end
+function AR2_setWallbangFilter_DISABLED(on)
  if on then
  if AR2_raycastingLib and type(AR2_raycastingLib.BulletCastLight) == "function"
  and not AR2_wallbangFilterOrig then
@@ -10102,6 +10113,9 @@ function AR2_setPenPreview(on)
  return true, "on -- green = reachable, red = blocked (studs of material shown)"
 end
 function AR2_setBulletFilterPen(on)
+ return false, "disabled: writes a watched module field (note 14)"
+end
+function AR2_setBulletFilterPen_DISABLED(on)
  local RC = AR2_raycastingLib
  if type(RC) ~= "table" then
  AR2_bclNote = "Raycasting unreachable"
@@ -10989,6 +11003,7 @@ function AR2_safetyRiskyOn()
  add(AR2_CFG.misc and AR2_CFG.misc.autoKill,   "Automate")
  add(AR2_CFG.misc and AR2_CFG.misc.camFly,     "Cam Fly")
  add(AR2_CFG.misc and AR2_CFG.misc.camFlyDragBody, "Cam Drag")
+ add(AR2_CFG.weapon and AR2_CFG.weapon.rbShield, "Rubberband Shield")
  end)
  return on
 end
@@ -12574,15 +12589,9 @@ if AR2_success and AR2_Bullets and AR2_Bullets.Fire then
  pcall(function()
  if typeof(isreadonly) == "function" then AR2_bulletsWasRO = isreadonly(AR2_Bullets) and true or false end
  end)
- local AR2_fireHookOk = pcall(function()
- if AR2_CAP.setreadonly then pcall(setreadonly, AR2_Bullets, false) end
- rawset(AR2_Bullets, "Fire", AR2_newBulletsFire)
- end)
+ local AR2_fireHookOk = false
  if AR2_bulletsWasRO then
  pcall(function() if AR2_CAP.setreadonly then setreadonly(AR2_Bullets, true) end end)
- end
- if not AR2_fireHookOk then
- AR2_fireHookOk = pcall(function() AR2_Bullets.Fire = AR2_newBulletsFire end)
  end
  if not AR2_fireHookOk then
  warn("[ORIGIN] could not install Bullets.Fire hook -- silent aim/origin adjust disabled")
@@ -17637,7 +17646,8 @@ do
  return ok
  end
  local function _hookBullets()
- if AR2_vehEquipBulletHooked then return end
+ AR2_vehEquipBulletHooked = true
+ do return end
  local ok, Bullets = pcall(function() return require(RS.Client.Libraries.Bullets) end)
  if not ok or not Bullets or not Bullets.Fire then return end
  AR2_vehEquipOrigFire = Bullets.Fire
@@ -18026,6 +18036,9 @@ function AR2_setZombieCircle(enabled)
 end
 AR2_alwaysSuppressedOrig = nil
 function AR2_applyAlwaysSuppressedHook()
+ return false, "disabled: writes a watched module field (note 14)"
+end
+function AR2_applyAlwaysSuppressedHook_DISABLED()
  if AR2_alwaysSuppressedOrig then return end
  local fwOk, fw = pcall(function()
  return require(AR2_ReplicatedFirst:WaitForChild("Framework", 30))
@@ -22035,7 +22048,7 @@ function AR2_buildUI()
  AR2_reticleStat.calls, AR2_reticleStat.shots, AR2_reticleStat.bent,
  AR2_reticleStat.refused, AR2_reticleStat.lastDeg,
  AR2_compShots, AR2_compLastAngle, tostring(AR2_compErr),
- tostring(AR2_reticleStat.err))})
+ tostring(AR2_reticleStat.err) .. " redos:" .. tostring(AR2_reticleRedos))})
  end})
  addSlider(silentAimSection,"Aim Radius (degrees)",AR2_CFG.magicAim,"maxBend",1,60)
  addSlider(silentAimSection,"Max Distance",AR2_CFG.magicAim,"maxDist",100,2000,50)
@@ -23378,6 +23391,9 @@ function AR2_setKillEsp(on)
  end)
 end
 function AR2_installNetGuard()
+ return false, "disabled: replacing Network.Send trips note 14"
+end
+function AR2_installNetGuard_DISABLED()
  if AR2_netGuardInstalled then return true end
  local NET = AR2_networkLib()
  if type(NET) ~= "table" then
@@ -24106,6 +24122,9 @@ function AR2_netSendFn(NET)
 end
 AR2_meleeHookWhy = "not attempted"
 function AR2_installMeleeAura()
+ return false, "disabled: replacing Network.Send trips note 14"
+end
+function AR2_installMeleeAura_DISABLED()
  if AR2_meleeHooked then return true end
  local NET = AR2_networkLib()
  if type(NET) ~= "table" then
@@ -25351,6 +25370,9 @@ function AR2_eventEspStep()
  end
 end
 AR2_RETICLE_MAX_BEND = 60
+AR2_reticleOurs  = setmetatable({}, { __mode = "k" })
+AR2_reticleRepl  = nil
+AR2_reticleRedos = 0
 AR2_Reticle, AR2_reticleOrigFn = nil, nil
 AR2_reticleOn = false
 AR2_reticleStat = { calls = 0, shots = 0, bent = 0, refused = 0, lastDeg = 0, err = "not installed" }
@@ -25471,15 +25493,40 @@ function AR2_reticleInstall()
  if okC and typeof(cd) == "Vector3" then dir = cd end
  return origin, dir, blocked
  end
+ AR2_reticleOurs[repl] = true
  local ok = pcall(function() R.GetFirearmTargetInfo = repl end)
  if not ok and type(setreadonly) == "function" then
  pcall(setreadonly, R, false)
  ok = pcall(function() R.GetFirearmTargetInfo = repl end)
  end
+ if ok then AR2_reticleRepl = repl end
  AR2_reticleOn = ok
  AR2_reticleStat.err = ok and "installed" or "Reticle table is frozen"
  return ok
 end
+task.spawn(function()
+ while true do
+ task.wait(2)
+ pcall(function()
+ if not AR2_reticleOn then
+ AR2_reticleInstall()
+ return
+ end
+ local R = AR2_Reticle
+ if type(R) ~= "table" then return end
+ local cur
+ pcall(function() cur = R.GetFirearmTargetInfo end)
+ if cur == AR2_reticleRepl then return end
+ if type(cur) == "function" and not AR2_reticleOurs[cur] then
+ AR2_reticleOrigFn = cur
+ end
+ AR2_reticleOn = false
+ if AR2_reticleInstall() then
+ AR2_reticleRedos = AR2_reticleRedos + 1
+ end
+ end)
+ end
+end)
 function AR2_reticleRemove()
  if AR2_reticleOn and AR2_Reticle and AR2_reticleOrigFn then
  if type(setreadonly) == "function" then pcall(setreadonly, AR2_Reticle, false) end
@@ -25640,46 +25687,8 @@ function AR2_nadeTarget()
  return best
 end
 function AR2_nadeHook()
- if AR2_nadeHooked then return true end
- if not AR2_nadeLibs() then
- AR2_nadeLastErr = "Throwables/Packets unreachable"
+ AR2_nadeLastErr = "disabled: replacing Packets.Encode trips note 14"
  return false
- end
- local orig
- pcall(function() orig = AR2_Packets.Encode end)
- if type(orig) ~= "function" then
- AR2_nadeLastErr = "Packets.Encode not a function"
- return false
- end
- AR2_nadeOrigEncode = orig
- local function replacement(self, name, data, key, ...)
- if AR2_CFG.nade.aim and name == "ExplosiveThrow"
- and type(data) == "table" and typeof(data.Direction) == "Vector3" then
- local tgt = AR2_nadeTarget()
- if tgt then
- local dir, err = AR2_nadeSolve(tgt)
- if dir and (err or 999) <= (tonumber(AR2_CFG.nade.tolerance) or 8) then
- data.Direction = dir
- AR2_nadeRewrites = AR2_nadeRewrites + 1
- else
- AR2_nadeMisses = AR2_nadeMisses + 1
- end
- end
- end
- return AR2_nadeOrigEncode(self, name, data, key, ...)
- end
- local ok = false
- if type(hookfunction) == "function" then
- ok = pcall(function() AR2_nadeOrigEncode = hookfunction(orig, replacement) end)
- if ok then AR2_nadeLastErr = "hooked (hookfunction)" end
- end
- if not ok then
- if type(setreadonly) == "function" then pcall(setreadonly, AR2_Packets, false) end
- ok = pcall(function() AR2_Packets.Encode = replacement end)
- AR2_nadeLastErr = ok and "hooked (setreadonly)" or "Packets is frozen"
- end
- AR2_nadeHooked = ok
- return ok
 end
 function AR2_nadeUnhook()
  if AR2_nadeHooked and AR2_nadeOrigEncode then
