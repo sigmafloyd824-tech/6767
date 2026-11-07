@@ -289,7 +289,6 @@ AR2_CFG = {
  safeInterval = 0.2, minInterval = 0.08,
  requireADS = false, forceADS = false, adsMinDist = 0, fov = 250,
   visCheck = false,
- multiGap = 0.02,
   },
  weapon = {
  noRecoil = false, allFireModes = false, fireModesSafe = false,
@@ -303,7 +302,7 @@ AR2_CFG = {
  instaBullets = false, ibNoDrop = true, ibAdapt = true,
  ibMaxMult = 3, ibDistCap = true, ibToleranceMs = 50,
  globalSpeed = false, globalSpeedMult = 1, zeroDrop = false,
- flyFireSlow = true, flyFireSlowPct = 0.15, fakeWindows = false,
+ fakeWindows = false,
  volley = false, volleyGap = 100,
  meleeSpeed = false, meleeSpeedMult = 2,
  alwaysHead = false,
@@ -451,6 +450,9 @@ AR2_CFG = {
  tracerLife = 1.2, tracerFade = 0.35, tracerExpand = true,
  tracerExpandSpeed = 18, tracerDamper = 0.7, tracerMax = 48,
  spinOn = false, spinSpeed = 20, spinTilt = false,
+ antiAim = { hrp = false, look = false, mode = "Backwards", spinSpeed = 12,
+ jitterDeg = 145, staticYaw = 180, pitch = "Off", pitchDeg = 89,
+ pitchSpeed = 8, fpSuspend = true },
  charm = false, charmMode = "Color", charmHue = 0, charmRainbow = false,
  charmGray = 50, globalCharm = false, charmEnemiesOnly = false,
  globalChams = false, globalChamsHue = 0,
@@ -1133,13 +1135,21 @@ function AR2_applyLoadedConfig()
   local ok, e = pcall(fn)
   if not ok then errs[#errs + 1] = tostring(e) end
  end
+ s(function() AR2_setMeleeStrike(AR2_CFG.melee.strike) end)
+ s(function() AR2_setShoveAura(AR2_CFG.melee.shoveAura) end)
+ s(function() AR2_setInstaBullets(AR2_CFG.weapon.instaBullets) end)
+ s(function() if not AR2_reticleOn then AR2_reticleInstall() end end)
+ s(function() AR2_applyRecoil() end)
+ s(function() AR2_setZeroBloom(AR2_CFG.zeroMoveBloom) end)
+ s(function() if AR2_CFG.weapon.rbShield then AR2_rbShieldSet(true) end end)
+ s(function() AR2_nadeEspSet(AR2_CFG.nade and AR2_CFG.nade.esp) end)
  s(function() AR2_applyUITheme() end)
  s(function() AR2_esp.update() end)
  s(function() if AR2_CFG.aim.on then AR2_aim.start() else AR2_aim.stop() end end)
  s(function() AR2_magicUpdate() end)
  s(function() AR2_tracersUpdate() end)
  s(function() pcall(AR2_setPenPreview, AR2_CFG.weapon.penPreview) end)
- s(function() if AR2_CFG.misc.freeze then AR2_freeze.start() else AR2_freeze.stop() end end)
+ s(function() AR2_freeze.stop() end)
  s(function() AR2_visuals.apply() end)
  s(function() AR2_carMods.apply() end)
  s(function() if AR2_CFG.radar.on then AR2_radar.start() else AR2_radar.stop() end end)
@@ -1203,7 +1213,7 @@ function AR2_applyLoadedConfig()
  s(function() AR2_setClouds(AR2_CFG.visuals.cloudsEnabled, AR2_CFG.visuals.modifyClouds, AR2_CFG.visuals.cloudsColor, AR2_CFG.visuals.cloudsCover, AR2_CFG.visuals.cloudsDensity) end)
  s(function() AR2_setColorCorrection(AR2_CFG.visuals.colorCorrectionEnabled, AR2_CFG.visuals.ccSaturation, AR2_CFG.visuals.ccContrast, AR2_CFG.visuals.ccBrightness) end)
  s(function() AR2_toggleWorldwide(AR2_CFG.magicAim.ignoreFov) end)
- s(function() AR2_setZombieCircle(AR2_CFG.misc.zombieCircle.enabled) end)
+ s(function() AR2_setZombieCircle(false) end)
  s(function() AR2_setAlwaysSuppressed(AR2_CFG.weapon.alwaysSuppressed) end)
  s(function() AR2_hitSoundLoad(AR2_CFG.hitmarker.soundPath) end)
  s(function() AR2_applyEspColors() end)
@@ -5322,6 +5332,94 @@ do
  end)
  end)
 end
+AR2_aaT0 = os.clock()
+AR2_aaHrpTouched, AR2_aaHrpWasEnabled = false, nil
+function AR2_aaYawDeg(camYawDeg)
+ local c = AR2_CFG.misc.antiAim
+ local m = c.mode
+ if m == "Spin" then
+ return (os.clock() - AR2_aaT0) * (tonumber(c.spinSpeed) or 12) * 60 % 360
+ elseif m == "Jitter" then
+ local j = (tonumber(c.jitterDeg) or 145) / 2
+ local phase = math.floor((os.clock() - AR2_aaT0) * 10) % 2
+ return camYawDeg + 180 + (phase == 0 and -j or j)
+ elseif m == "Static" then
+ return tonumber(c.staticYaw) or 180
+ end
+ return camYawDeg + 180
+end
+function AR2_aaPitchDeg()
+ local c = AR2_CFG.misc.antiAim
+ local pm = c.pitch
+ if not pm or pm == "Off" then return 0 end
+ local d = tonumber(c.pitchDeg) or 89
+ if pm == "Down" then return -d
+ elseif pm == "Up" then return d
+ elseif pm == "Fold" then return -89
+ elseif pm == "Spin" then
+ return math.sin((os.clock() - AR2_aaT0) * (tonumber(c.pitchSpeed) or 8)) * d
+ end
+ return -d
+end
+function AR2_aaSuspended()
+ local c = AR2_CFG.misc.antiAim
+ if not c.fpSuspend then return false end
+ local cam = AR2_Workspace.CurrentCamera
+ local ch  = AR2_LocalPlayer and AR2_LocalPlayer.Character
+ local root = ch and ch:FindFirstChild("HumanoidRootPart")
+ if not (cam and root) then return false end
+ return (cam.CFrame.Position - root.Position).Magnitude < 1
+end
+function AR2_aaStep(dt)
+ local c = AR2_CFG.misc.antiAim
+ if not (c.hrp or c.look) then
+ if AR2_aaAutoRotWas ~= nil then
+ local ch  = AR2_LocalPlayer and AR2_LocalPlayer.Character
+ local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+ if hum then pcall(function() hum.AutoRotate = AR2_aaAutoRotWas end) end
+ AR2_aaAutoRotWas = nil
+ end
+ return
+ end
+ local cam = AR2_Workspace.CurrentCamera
+ if not cam then return end
+ local gc = AR2_resolveGameCharacter and AR2_resolveGameCharacter()
+ if not gc then return end
+ local suspend = AR2_aaSuspended()
+ local _, camYaw = cam.CFrame:ToOrientation()
+ local yaw   = math.rad(AR2_aaYawDeg(math.deg(camYaw)))
+ local pitch = math.rad(AR2_aaPitchDeg())
+ if c.hrp then
+ local ch   = AR2_LocalPlayer and AR2_LocalPlayer.Character
+ local root = ch and ch:FindFirstChild("HumanoidRootPart")
+ local hum  = ch and ch:FindFirstChildOfClass("Humanoid")
+ if root and hum then
+ if suspend then
+ if AR2_aaAutoRotWas ~= nil then
+ pcall(function() hum.AutoRotate = AR2_aaAutoRotWas end)
+ AR2_aaAutoRotWas = nil
+ end
+ else
+ if AR2_aaAutoRotWas == nil then
+ pcall(function() AR2_aaAutoRotWas = hum.AutoRotate end)
+ end
+ pcall(function()
+ hum.AutoRotate = false
+ root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yaw, 0)
+ end)
+ end
+ end
+ end
+ if c.look and not suspend then
+ local spr
+ pcall(function() spr = gc.LookDirectionSpring end)
+ if spr then
+ local v = CFrame.fromEulerAnglesYXZ(pitch, yaw, 0).LookVector
+ pcall(function() spr:StepTo(v, dt or 1 / 60) end)
+ end
+ end
+end
+AR2_aaConn = AR2_RunService.Heartbeat:Connect(AR2_sw(AR2_aaStep))
 AR2_hidePlayerOriginal = {}
 function AR2_refreshHideState()
  local char = AR2_LocalPlayer.Character
@@ -6328,6 +6426,9 @@ function AR2_predict(part, origin, velocity)
  if leadVec.Magnitude > leadCap then
  leadVec = leadVec.Unit * leadCap
  end
+ AR2_lastLeadStuds = leadVec.Magnitude
+ AR2_lastDropStuds = drop.Magnitude
+ AR2_lastFlight    = flight
  return base + leadVec + drop
 end
 AR2_lastNudge = 0
@@ -8167,9 +8268,6 @@ end)
 AR2_whitelistOrig = nil
 AR2_headHits      = 0
 function AR2_installAlwaysHead()
- return false, "disabled: writes a watched module field (note 14)"
-end
-function AR2_installAlwaysHead_DISABLED()
  if AR2_whitelistOrig then return true end
  if not AR2_raycastingLib then return false end
  if type(rawget(AR2_raycastingLib, "CastWithWhiteList")) ~= "function" then return false end
@@ -9527,38 +9625,18 @@ AR2_wallbangFilterOrig = nil
 AR2_wbInPierce = false
 function AR2_setWallbangAll(on)
  local w = AR2_CFG.weapon
- w.wallbang = on and true or false
- local budget = 999
- w.wallbangBudget = budget
- w.penBudget      = budget
- w.wallbangPierce = 12
- w.penUnlimited   = false
+ w.wallbang       = on and true or false
  w.wallbangFilter = w.wallbang
- w.ignoreInject   = w.wallbang
- w.fakeWindows    = w.wallbang
- w.hbeSpoofCast   = w.wallbang
  pcall(AR2_setWallbangWhitelist, false)
  pcall(AR2_setBulletFilterPen, false)
- if not (w.wallbang or w.hbeOn) then
- pcall(AR2_setWallbangFilter, false)
- end
- if w.wallbang then
- local okD = AR2_setWallbangFilter(true)
- if okD then
- AR2_wbModeNote = "on"
- else
- pcall(AR2_setBulletFilterPen, true)
- AR2_wbModeNote = "on -- depth unavailable, using filter"
- end
- else
- AR2_wbModeNote = "off"
- end
- if w.wallbang then
- pcall(function() if startWallbangTagging then startWallbangTagging() end end)
- else
  pcall(function() if stopWallbangTagging then stopWallbangTagging() end end)
+ if w.wallbang then
+ AR2_wbModeNote = AR2_setWallbangFilter(true) and "filter on" or "filter FAILED"
+ else
+ if not w.hbeOn then pcall(AR2_setWallbangFilter, false) end
  pcall(AR2_releaseIgnoredParts)
  pcall(AR2_clearFakeWindows)
+ AR2_wbModeNote = "off"
  end
 end
 AR2_wlOrig    = nil
@@ -9690,9 +9768,6 @@ function AR2_mrRecord(part, dist)
  if #AR2_mrLog > 120 then table.remove(AR2_mrLog, 1) end
 end
 function AR2_setWallbangWhitelist(on)
- return false, "disabled: writes a watched module field (note 14)"
-end
-function AR2_setWallbangWhitelist_DISABLED(on)
  local RC = AR2_raycastingLib
  if type(RC) ~= "table" then return false, "Raycasting unreachable" end
  if not on then
@@ -9751,9 +9826,6 @@ function AR2_setWallbangWhitelist_DISABLED(on)
  return true, ("on -- %d parts whitelisted"):format(#AR2_wlFlat)
 end
 function AR2_setWallbangFilter(on)
- return false, "disabled: writes a watched module field (note 14)"
-end
-function AR2_setWallbangFilter_DISABLED(on)
  if on then
  if AR2_raycastingLib and type(AR2_raycastingLib.BulletCastLight) == "function"
  and not AR2_wallbangFilterOrig then
@@ -10113,9 +10185,6 @@ function AR2_setPenPreview(on)
  return true, "on -- green = reachable, red = blocked (studs of material shown)"
 end
 function AR2_setBulletFilterPen(on)
- return false, "disabled: writes a watched module field (note 14)"
-end
-function AR2_setBulletFilterPen_DISABLED(on)
  local RC = AR2_raycastingLib
  if type(RC) ~= "table" then
  AR2_bclNote = "Raycasting unreachable"
@@ -12113,6 +12182,30 @@ end
 AR2_success, AR2_Bullets = pcall(function()
  return require(AR2_ReplicatedFirst:WaitForChild("Framework", 30)).Libraries.Bullets
 end)
+function AR2_applyRecoil()
+ if type(AR2_setUpval) ~= "function" then return false, "Bullets not resolved" end
+ if not AR2_recoilOriginalFn then return false, "recoil slot not captured" end
+ local pct = AR2_safeClamp(tonumber(AR2_CFG.weapon.recoilReduction) or 0, 0, 100)
+ if pct <= 0 then
+ AR2_setUpval(AR2_SLOT_RECOIL, AR2_recoilOriginalFn, "recoil restore")
+ return true, "recoil back to normal"
+ end
+ local keep = 1 - pct / 100
+ local orig = AR2_recoilOriginalFn
+ local function newRecoil(...)
+ local shift, roll, raise, slide, kick = orig(...)
+ if typeof(shift) ~= "Vector2" then return shift, roll, raise, slide, kick end
+ return Vector2.new(shift.X * keep, shift.Y * keep),
+ (tonumber(roll) or 0) * keep,
+ (tonumber(raise) or 0) * keep,
+ (tonumber(slide) or 0) * keep,
+ (tonumber(kick) or 0) * keep
+ end
+ if AR2_setUpval(AR2_SLOT_RECOIL, newRecoil, "recoil") then
+ return true, (pct >= 100) and "no recoil" or ("recoil cut " .. pct .. "%")
+ end
+ return false, "upvalue slot refused the write"
+end
 AR2_originalFireFunction = nil
 AR2_recoilOriginalFn     = nil
 AR2_spreadOriginalFn     = nil
@@ -12446,7 +12539,7 @@ if AR2_success and AR2_Bullets and AR2_Bullets.Fire then
  end
  AR2_spreadSelfTest(direction, want, angle, st)
  else
- if AR2_CAP.setupvalue and AR2_spreadAngleOrigFn then
+ if false and AR2_CAP.setupvalue and AR2_spreadAngleOrigFn then
  local okZero = AR2_setUpval(AR2_SLOT_ANGLE, AR2_spreadZeroFn, "spread zero")
  if okZero then
  AR2_spreadZeroShots = (AR2_spreadZeroShots or 0) + 1
@@ -12468,26 +12561,7 @@ if AR2_success and AR2_Bullets and AR2_Bullets.Fire then
  end)
  end
  AR2_spreadTargetDir, AR2_spreadAxis = nil, nil
- if AR2_CFG.weapon.noRecoil and AR2_CAP.setupvalue then
- pcall(function()
- AR2_setUpval(AR2_SLOT_RECOIL,
- function(...) return Vector2.new(0,0), 0, 0, 0, 0 end, "no recoil")
- end)
- elseif AR2_CFG.weapon.recoilReduction and AR2_CFG.weapon.recoilReduction > 0 and AR2_CAP.setupvalue then
- local reduction = AR2_CFG.weapon.recoilReduction / 100
- if AR2_recoilOriginalFn then
- local function newRecoil(...)
- local x, y, z, a, b = AR2_recoilOriginalFn(...)
- return Vector2.new(x.X*(1-reduction), x.Y*(1-reduction)),
- z*(1-reduction), a*(1-reduction), b*(1-reduction), 0
- end
- AR2_setUpval(AR2_SLOT_RECOIL, newRecoil, "recoil")
- end
- else
- if AR2_recoilOriginalFn and AR2_CAP.setupvalue then
- AR2_setUpval(AR2_SLOT_RECOIL, AR2_recoilOriginalFn, "recoil restore")
- end
- end
+ pcall(AR2_applyRecoil)
  if AR2_CFG.weapon.wallbang then
  local penFields = {
  "Penetration","PenetrationPower","WallPenetration",
@@ -12589,12 +12663,18 @@ if AR2_success and AR2_Bullets and AR2_Bullets.Fire then
  pcall(function()
  if typeof(isreadonly) == "function" then AR2_bulletsWasRO = isreadonly(AR2_Bullets) and true or false end
  end)
- local AR2_fireHookOk = false
+ local AR2_fireHookOk = pcall(function()
+ if AR2_CAP.setreadonly then pcall(setreadonly, AR2_Bullets, false) end
+ rawset(AR2_Bullets, "Fire", AR2_newBulletsFire)
+ end)
  if AR2_bulletsWasRO then
  pcall(function() if AR2_CAP.setreadonly then setreadonly(AR2_Bullets, true) end end)
  end
  if not AR2_fireHookOk then
- warn("[ORIGIN] could not install Bullets.Fire hook -- silent aim/origin adjust disabled")
+ AR2_fireHookOk = pcall(function() AR2_Bullets.Fire = AR2_newBulletsFire end)
+ end
+ if not AR2_fireHookOk then
+ warn("[ORIGIN] could not install Bullets.Fire hook -- origin adjust/tracers disabled")
  end
 end
 AR2_hbeVisuals     = {}
@@ -18036,9 +18116,6 @@ function AR2_setZombieCircle(enabled)
 end
 AR2_alwaysSuppressedOrig = nil
 function AR2_applyAlwaysSuppressedHook()
- return false, "disabled: writes a watched module field (note 14)"
-end
-function AR2_applyAlwaysSuppressedHook_DISABLED()
  if AR2_alwaysSuppressedOrig then return end
  local fwOk, fw = pcall(function()
  return require(AR2_ReplicatedFirst:WaitForChild("Framework", 30))
@@ -19416,7 +19493,10 @@ function AR2_registerAllKeybinds()
  AR2_registerKeybind("tracers",function() AR2_CFG.misc.tracers=not AR2_CFG.misc.tracers AR2_tracersUpdate() end)
  AR2_registerKeybind("speedHack",function() AR2_CFG.speed.on=not AR2_CFG.speed.on if AR2_CFG.speed.on then AR2_speed.start() else AR2_speed.stop() end end)
  AR2_registerKeybind("infJump",function() AR2_CFG.misc.infJump=not AR2_CFG.misc.infJump if AR2_CFG.misc.infJump then AR2_startInfJump() else AR2_stopInfJump() end end)
- AR2_registerKeybind("spinBot",function() AR2_setSpin(not AR2_CFG.misc.spinOn) end)
+ AR2_registerKeybind("spinBot",function()
+ AR2_CFG.misc.antiAim.hrp = not AR2_CFG.misc.antiAim.hrp
+ AR2_notify("HRP anti-aim " .. (AR2_CFG.misc.antiAim.hrp and "on" or "off"), 3)
+ end)
  AR2_registerKeybind("antiRagdoll",function() AR2_setAntiRagdoll(not AR2_CFG.misc.antiRagdoll) end)
  AR2_registerKeybind("freecam",function() AR2_freecamSet(not AR2_CFG.misc.freecam) end)
  AR2_registerKeybind("bodyHide",function() AR2_bodyHideSet(not AR2_CFG.misc.bodyHide) end)
@@ -19431,7 +19511,6 @@ function AR2_registerAllKeybinds()
  AR2_registerKeybind("carFly",function() AR2_carFlySetEnabled(not AR2_CFG.car.fly) end)
  AR2_registerKeybind("fly",function() AR2_setFly(not AR2_CFG.misc.fly) end)
  AR2_registerKeybind("flyRecover",function() AR2_resetFallState() end)
- AR2_registerKeybind("freezeZombies",function() AR2_CFG.misc.freeze=not AR2_CFG.misc.freeze if AR2_CFG.misc.freeze then AR2_freeze.start() else AR2_freeze.stop() end end)
  AR2_registerKeybind("fullbright",function() AR2_CFG.visuals.fullbright=not AR2_CFG.visuals.fullbright AR2_visuals.apply() end)
  AR2_registerKeybind("zombieCircle",function() AR2_setZombieCircle(not AR2_CFG.misc.zombieCircle.enabled) end)
  AR2_registerKeybind("jumpCircle",function() AR2_setJumpCircle(not AR2_CFG.misc.jumpCircle.enabled) end)
@@ -22043,10 +22122,20 @@ function AR2_buildUI()
  AR2_magicUpdate()
  end,"silentAim")
  silentAimSection:AddButton({Name="Redirect Status",Callback=function()
- Notif.new({Title="DROIDWARE",Duration=16,Content=("hooked=%s on=%s | frames %d shots %d bent %d refused %d | bend %.1f | comp %d cone %.2f deg (%s) | %s")
+ local spd = 0
+ pcall(function() spd = AR2_getBulletSpeed() or 0 end)
+ Notif.new({Title="DROIDWARE",Duration=20,Content=
+ ("hook=%s on=%s shots=%d bent=%d refused=%d bend=%.1f deg | "
+ .. "speed=%.0f verified=%s src=%s skipped=%d | "
+ .. "lead=%.1f drop=%.1f flight=%.3fs | "
+ .. "comp=%d cone=%.2f deg (%s) | %s")
  :format(tostring(AR2_reticleOn), tostring(AR2_CFG.magicAim.on),
- AR2_reticleStat.calls, AR2_reticleStat.shots, AR2_reticleStat.bent,
- AR2_reticleStat.refused, AR2_reticleStat.lastDeg,
+ AR2_reticleStat.shots, AR2_reticleStat.bent, AR2_reticleStat.refused,
+ AR2_reticleStat.lastDeg,
+ spd, tostring(AR2_speedVerified), tostring(AR2_speedSource),
+ tonumber(AR2_predictSkipped) or 0,
+ tonumber(AR2_lastLeadStuds) or 0, tonumber(AR2_lastDropStuds) or 0,
+ tonumber(AR2_lastFlight) or 0,
  AR2_compShots, AR2_compLastAngle, tostring(AR2_compErr),
  tostring(AR2_reticleStat.err) .. " redos:" .. tostring(AR2_reticleRedos))})
  end})
@@ -22117,7 +22206,7 @@ function AR2_buildUI()
  addSlider(rageBotSection,"FOV",AR2_CFG.rageBot,"fov",50,500,function(v) AR2_CFG.rageBot.fov=v end)
  addToggle(rageBotSection,"Skip Teammates",AR2_CFG.magicAim,"noTeammate",function(v) AR2_CFG.magicAim.noTeammate=v end)
  rageBotSection:AddLabel("Accuracy")
- addSlider(rageBotSection,"Gap Between Shots",AR2_CFG.rageBot,"multiGap",0,0.2,2)
+ addSlider(rageBotSection,"Gap Between Shots",AR2_CFG.rageBot,"safeInterval",0.05,1,2)
  rageBotSection:AddButton({Name="PANIC — Disable RageBot Now (L)",Callback=function() AR2_rageBotPanic() end})
  local skySection = combatTab:AddSection({Name="Desync Kill"})
  skySection:AddLabel("Teleport presets. Keep offsets small -- big jumps get you rubberbanded.")
@@ -22367,10 +22456,27 @@ function AR2_buildUI()
  addToggle(travelSection,"Anchor While Travelling",AR2_CFG.tp,"travelAnchor")
  addSlider(travelSection,"Speed",AR2_CFG.tp,"travelSpeed",100,30000,250)
  addSlider(travelSection,"Max Step / Frame",AR2_CFG.tp,"travelStep",10,800,10)
- local spinSection = movementTab:AddSection({Name="Spin Bot"})
- addToggle(spinSection,"Enabled",AR2_CFG.misc,"spinOn",function(v) AR2_setSpin(v) end)
- addToggle(spinSection,"Tilt",AR2_CFG.misc,"spinTilt")
- addSlider(spinSection,"Speed",AR2_CFG.misc,"spinSpeed",1,60)
+ local aaSection = movementTab:AddSection({Name="Anti-Aim"})
+ aaSection:AddLabel("Fakes where your body faces. HRP turns you for real; Look Vector also changes what the server is told.")
+ addToggle(aaSection,"HRP Anti-Aim",AR2_CFG.misc.antiAim,"hrp",function(v)
+ Notif.new({Title="DROIDWARE",Duration=7,Content=v
+ and "steering the game's own ParkourAlignRotation"
+ or "body rotation released"})
+ end,"spinBot")
+ addToggle(aaSection,"Look Vector Anti-Aim",AR2_CFG.misc.antiAim,"look",function(v)
+ Notif.new({Title="DROIDWARE",Duration=7,Content=v
+ and "faking LookDirection -- turns the torso and the report"
+ or "look direction released"})
+ end)
+ addDropdown(aaSection,"Yaw Mode",{"Backwards","Spin","Jitter","Static"},AR2_CFG.misc.antiAim,"mode")
+ addSlider(aaSection,"Spin Speed",AR2_CFG.misc.antiAim,"spinSpeed",1,40)
+ addSlider(aaSection,"Jitter Degrees",AR2_CFG.misc.antiAim,"jitterDeg",10,180)
+ addSlider(aaSection,"Static Yaw",AR2_CFG.misc.antiAim,"staticYaw",0,359)
+ aaSection:AddLabel("Pitch only applies to Look Vector -- tilting the root drops you through the floor.")
+ addDropdown(aaSection,"Pitch Mode",{"Off","Down","Up","Fold","Spin"},AR2_CFG.misc.antiAim,"pitch")
+ addSlider(aaSection,"Pitch Degrees",AR2_CFG.misc.antiAim,"pitchDeg",1,89)
+ addSlider(aaSection,"Pitch Speed",AR2_CFG.misc.antiAim,"pitchSpeed",1,20)
+ addToggle(aaSection,"Suspend In First Person",AR2_CFG.misc.antiAim,"fpSuspend")
  local stunSection = movementTab:AddSection({Name="Stun & Ragdoll"})
  addToggle(stunSection,"Anti Ragdoll / Stun",AR2_CFG.misc,"antiRagdoll",function(v) AR2_setAntiRagdoll(v) end,"antiRagdoll")
  addToggle(stunSection,"Anti Fall Stun",AR2_CFG.misc,"antiFallStun",function(v) AR2_setAntiFallStun(v) end)
@@ -22399,19 +22505,28 @@ function AR2_buildUI()
  addToggle(weaponModsSection,"Vehicle Equip",AR2_CFG.weapon,"vehicleEquip",function(v) AR2_setVehicleEquip(v) end)
  addToggle(weaponModsSection,"Instant Reload",AR2_CFG.weapon,"instantReload",function(v) setInstantReloadEnabled(v) end)
  addToggle(weaponModsSection,"Auto Reload",AR2_CFG.weapon,"autoReload",function(v) AR2_setAutoReload(v) end)
- addSlider(weaponModsSection,"Recoil Reduction %",AR2_CFG.weapon,"recoilReduction",0,100)
+ addSlider(weaponModsSection,"Recoil Reduction % (100 = none)",AR2_CFG.weapon,"recoilReduction",0,100,function(v)
+ local ok, why = AR2_applyRecoil()
+ Notif.new({Title="DROIDWARE",Duration=6,Content=tostring(why)})
+ end)
  local bulletSection = weaponsTab:AddSection({Name="Bullet Mods",Position="right"})
  addToggle(bulletSection,"Always Head",AR2_CFG.weapon,"alwaysHead",function(v)
  if v and not AR2_installAlwaysHead() then
  Notif.new({Title="DROIDWARE",Content="Could not hook CastWithWhiteList",Duration=4})
  end
  end)
- addToggle(bulletSection,"Spread Compensation",AR2_CFG.weapon,"spreadComp")
- addToggle(bulletSection,"Slow Fly While Firing",AR2_CFG.weapon,"flyFireSlow")
- addSlider(bulletSection,"Fly Fire Speed %",AR2_CFG.weapon,"flyFireSlowPct",0.02,1,0.01)
+ addToggle(bulletSection,"Spread Compensation",AR2_CFG.weapon,"spreadComp",function(v)
+ Notif.new({Title="DROIDWARE",Duration=8,Content=v
+ and "cancels the cone instead of zeroing it -- needs Silent Aim hooked"
+ or "spread comp off"})
+ end)
         addToggle(bulletSection,"Wallbang",AR2_CFG.weapon,"wallbang",function(v)
  AR2_setWallbangAll(v)
  Notif.new({Title="DROIDWARE",Content="Wallbang: "..tostring(AR2_wbModeNote),Duration=4})
+ end)
+ addSlider(bulletSection,"  └ Wallbang Depth",AR2_CFG.weapon,"wallbangPierce",1,12,function(v)
+ AR2_CFG.weapon.wallbangBudget = v
+ AR2_CFG.weapon.penBudget      = v
  end)
  addToggle(bulletSection,"Instant Bullets",AR2_CFG.weapon,"instaBullets",function(v)
  local on = AR2_setInstaBullets(v)
@@ -22431,8 +22546,18 @@ function AR2_buildUI()
  Content=tostring(why).." | blocked so far: "..tostring(AR2_rbBlocked)})
  end)
  local meleeModsSection = weaponsTab:AddSection({Name="Melee Mods",Position="right"})
- addToggle(meleeModsSection,"Melee",AR2_CFG.melee,"strike",function(v) AR2_setMeleeStrike(v) end)
- addToggle(meleeModsSection,"Shove Aura",AR2_CFG.melee,"shoveAura",function(v) AR2_setShoveAura(v) end)
+ addToggle(meleeModsSection,"Melee",AR2_CFG.melee,"strike",function(v)
+ AR2_setMeleeStrike(v)
+ if v then Notif.new({Title="DROIDWARE",Duration=8,
+ Content="packets: "..tostring(AR2_pkLastErr).." | sent "..tostring(AR2_pkSends)
+ .." failed "..tostring(AR2_pkFails)}) end
+ end)
+ addToggle(meleeModsSection,"Shove Aura",AR2_CFG.melee,"shoveAura",function(v)
+ AR2_setShoveAura(v)
+ if v then Notif.new({Title="DROIDWARE",Duration=8,
+ Content="packets: "..tostring(AR2_pkLastErr).." | sent "..tostring(AR2_pkSends)
+ .." failed "..tostring(AR2_pkFails)}) end
+ end)
  addToggle(meleeModsSection,"  └ Spoof Equip",AR2_CFG.melee,"spoofEquip")
         addToggle(meleeModsSection,"Respect Weapon Speed",AR2_CFG.melee,"respectSpeed",function(v)
  Notif.new({Title="DROIDWARE",
@@ -22903,14 +23028,6 @@ function AR2_buildUI()
  Notif.new({Title="DROIDWARE",Content=tostring(why),Duration=4})
  end,
  })
- local freezeSection = miscTab:AddSection({Name="Freeze Zombies"})
- addToggle(freezeSection,"Enabled",AR2_CFG.misc,"freeze",function(v) if v then AR2_freeze.start() else AR2_freeze.stop() end end)
- addToggle(freezeSection,"Whole Server",AR2_CFG.misc,"freezeAll")
- addToggle(freezeSection,"Anchor",AR2_CFG.misc,"freezeAnchor")
- addSlider(freezeSection,"Radius",AR2_CFG.misc,"freezeRadius",50,2000)
- addToggle(freezeSection,"Zombie Circle",AR2_CFG.misc.zombieCircle,"enabled",function(v) AR2_setZombieCircle(v) end)
- addSlider(freezeSection,"Circle Distance",AR2_CFG.misc.zombieCircle,"distance",5,50,function(v) AR2_CFG.misc.zombieCircle.distance=v end)
- addSlider(freezeSection,"Circle Speed",AR2_CFG.misc.zombieCircle,"speed",1,20,function(v) AR2_CFG.misc.zombieCircle.speed=v end)
 AR2_fcOn       = false
 AR2_fcConn     = nil
 AR2_fcInputs   = nil
@@ -24038,19 +24155,75 @@ function AR2_meleeStrikeOnce()
  AR2_equipHoldUntil = os.clock() + 1.5
  local ok = pcall(function()
  local st = AR2_Workspace:GetServerTimeNow()
- send(NET, "Melee Swing", st, id, 1)
+ AR2_pkSend("Melee Swing", "MeleeSwing",
+ { AttackId = st, WeaponId = id, ComboIndex = 1 })
  task.delay(AR2_MELEE_SWING_LAG, function()
  if typeof(best) == "Instance" and best.Parent ~= nil then
  pcall(function()
- send(NET, "Melee Hit Register", id, st,
- Ray.new(handPos, aim.Unit * AR2_meleeReach()), best,
- hp * st * best.Size)
+ AR2_pkSend("Melee Hit", "MeleeHit", {
+ WeaponId     = id,
+ AttackId     = st,
+ RayOrigin    = handPos,
+ RayDirection = aim.Unit * AR2_meleeReach(),
+ Position     = best.Position,
+ }, best)
  end)
  end
  end)
  end)
  if ok then AR2_strikeSent = AR2_strikeSent + 1 end
  return ok
+end
+AR2_pkMod, AR2_pkFails, AR2_pkSends = nil, 0, 0
+AR2_pkLastErr = "not used yet"
+function AR2_packetsMod()
+ if AR2_pkMod then return AR2_pkMod end
+ local fwMod = AR2_ReplicatedFirst and AR2_ReplicatedFirst:FindFirstChild("Framework")
+ if not fwMod then return nil end
+ local fw
+ pcall(function() fw = require(fwMod) end)
+ if type(fw) ~= "table" then return nil end
+ pcall(function() AR2_pkMod = fw.require("Libraries", "Packets") end)
+ if not AR2_pkMod then pcall(function() AR2_pkMod = fw.Libraries.Packets end) end
+ return AR2_pkMod
+end
+function AR2_packetKey()
+ local gc = AR2_resolveGameCharacter and AR2_resolveGameCharacter()
+ if not gc then return nil end
+ local k
+ pcall(function() k = gc.PacketKey end)
+ return k
+end
+function AR2_pkSend(remoteName, layout, data, extra)
+ local NET  = AR2_networkLib()
+ local send = AR2_netSendFn(NET)
+ local P    = AR2_packetsMod()
+ local key  = AR2_packetKey()
+ if not (type(NET) == "table" and type(send) == "function" and type(P) == "table" and key) then
+ AR2_pkFails = AR2_pkFails + 1
+ AR2_pkLastErr = ("missing NET=%s send=%s Packets=%s key=%s")
+ :format(tostring(NET ~= nil), tostring(type(send) == "function"),
+ tostring(P ~= nil), tostring(key ~= nil))
+ return false
+ end
+ local buf
+ local okE = pcall(function() buf = P:Encode(layout, data, key) end)
+ if not okE or buf == nil then
+ AR2_pkFails = AR2_pkFails + 1
+ AR2_pkLastErr = "Encode(" .. tostring(layout) .. ") failed"
+ return false
+ end
+ local okS
+ if extra ~= nil then okS = pcall(send, NET, remoteName, buf, extra)
+ else okS = pcall(send, NET, remoteName, buf) end
+ if okS then
+ AR2_pkSends = AR2_pkSends + 1
+ AR2_pkLastErr = "sent " .. tostring(layout)
+ else
+ AR2_pkFails = AR2_pkFails + 1
+ AR2_pkLastErr = "Send(" .. tostring(remoteName) .. ") failed"
+ end
+ return okS
 end
 function AR2_meleeShoveAt(part, originPos)
  if typeof(part) ~= "Instance" then return false end
@@ -24069,8 +24242,14 @@ function AR2_meleeShoveAt(part, originPos)
  end
  local ok = pcall(function()
  local st = AR2_Workspace:GetServerTimeNow()
- send(NET, "Character Shove", st, claimed, dir)
- send(NET, "Melee Shove", dir, part, "Flesh")
+ AR2_pkSend("Character Shove", "CharacterShove",
+ { Timestamp = st, Origin = claimed, Direction = dir })
+ pcall(function()
+ local gc = AR2_resolveGameCharacter and AR2_resolveGameCharacter()
+ if gc and gc.Animator then gc.Animator:RunAction("Shove") end
+ end)
+ AR2_pkSend("Melee Shove", "MeleeShove",
+ { Direction = dir, Material = "Flesh" }, part)
  end)
  if ok then AR2_shoveHits = AR2_shoveHits + 1 end
  return ok
@@ -25485,6 +25664,19 @@ function AR2_reticleInstall()
  pcall(function() isShot = AR2_reticleIsShot(flag) end)
  if not isShot then return origin, dir, blocked end
  AR2_reticleStat.shots = AR2_reticleStat.shots + 1
+ pcall(function()
+ local item = char and char.EquippedItem
+ if not (AR2_Bullets and char and cam and item) then return end
+ local fp = { self = AR2_Bullets, pc = char, wi = cam, wd = item }
+ AR2_lastFireParams = fp
+ AR2_hasRealWD = true
+ local sid = AR2_weaponIdOf and (AR2_weaponIdOf(item))
+ if sid ~= nil then
+ fp.id = sid
+ if AR2_fireSeeds then AR2_fireSeeds[sid] = fp end
+ AR2_seedLastId = sid
+ end
+ end)
  if AR2_CFG.magicAim.on and typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
  local ok, nd = pcall(AR2_reticleSolve, origin, dir)
  if ok and typeof(nd) == "Vector3" then dir = nd end
@@ -27645,7 +27837,7 @@ end
  addKeybindEntry(combatKbSection,"Instant Reload","instantReload")
  addKeybindEntry(combatKbSection,"All Fire Modes","allFireModes")
  addKeybindEntry(combatKbSection,"Wallbang","wallbang")
- addKeybindEntry(combatKbSection,"Spin Bot","spinBot")
+ addKeybindEntry(combatKbSection,"HRP Anti-Aim","spinBot")
  addKeybindEntry(combatKbSection,"Anti Ragdoll / Stun","antiRagdoll")
  addKeybindEntry(combatKbSection,"Freecam","freecam")
  addKeybindEntry(combatKbSection,"Automate (Desync Kill)","autoKill")
@@ -27676,7 +27868,6 @@ end
  addKeybindEntry(espKbSection,"Loot ESP","lootESP")
  local miscKbSection = keybindsTab:AddSection({Name="Misc",Position="right"})
  addKeybindEntry(miscKbSection,"Body Hide","bodyHide")
- addKeybindEntry(miscKbSection,"Freeze Zombies","freezeZombies")
  addKeybindEntry(miscKbSection,"Fullbright","fullbright")
  addKeybindEntry(miscKbSection,"Zombie Circle","zombieCircle")
  addKeybindEntry(miscKbSection,"Jump Circle","jumpCircle")
@@ -27705,6 +27896,7 @@ end
  Notif.new({Title="DROIDWARE",Duration=10,
  Content="Aim Radius was above "..AR2_RETICLE_MAX_BEND.." deg (shooting behind you) -- reset to 12"})
  end
+ pcall(AR2_applyRecoil)
  local ok = pcall(AR2_reticleInstall)
  if not (ok and AR2_reticleOn) then
  Notif.new({Title="DROIDWARE",Duration=12,
